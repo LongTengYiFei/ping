@@ -1,3 +1,7 @@
+/*
+    Please run this program with root permission.
+*/
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/types.h>
@@ -10,73 +14,127 @@
 #include <netinet/ip.h>
 #include <netinet/ip_icmp.h>
 #include <errno.h>
-/*
-    please run this program with root permission.
-*/
+#include <pthread.h>
 
-// uint16_t cal_chksum(uint16_t *buff, int nLen)
-// {      
-//     int nleft = nLen;
-//     int nSum = 0;
-//     unsigned short * w = buff;
-//     unsigned short answer=0;
-
-//     /*把ICMP报头二进制数据以2字节为单位累加起来*/
-//     while(nleft>1)
-//     {       
-//         nSum+=*w++;
-//         nleft-=2;
-//     }
-//     /*若ICMP报头为奇数个字节，会剩下最后一字节。把最后一个字节视为一个2字节数据的高字节，这个2字节数据的低字节为0，继续累加*/
-//     if( nleft==1)
-//     {       
-//         *(unsigned char *)(&answer)=*(unsigned char *)w;
-//         nSum+=answer;
-//     }
-//     nSum=(nSum>>16)+(nSum&0xffff);
-//     nSum+=(nSum>>16);
-//     answer=~nSum;
-//     return answer;
-// }
 
 uint16_t getCheckSum(uint16_t *buff, int nLen)
 {      
+    int nleft = nLen;
+    int nSum = 0;
+    unsigned short * w = buff;
+    unsigned short nAnswer=0;
 
+    while(nleft>1)
+    {       
+        nSum+=*w++;
+        nleft-=2;
+    }
+    
+    if( nleft==1)
+    {       
+        *(unsigned char *)(&nAnswer)=*(unsigned char *)w;
+        nSum+=nAnswer;
+    }
+    nSum=(nSum>>16)+(nSum&0xffff);
+    nSum+=(nSum>>16);
+    nAnswer=~nSum;
+    return nAnswer;
 }
 
-int main()
-{
-    int nSockFd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
-    int nPid = getpid();
-    char * dest_ip = "220.181.38.148";
+struct STSendPackArgs{
+    char * pszDestIp;
+    uint16_t m_nPid;
+    int m_nSockFd;
+    struct sockaddr_in stPeerAddress;
+};
 
-    // send a icmp packet
+struct STRecvPackArgs{
+    int m_nSockFd;
+    uint16_t m_nPid;
+    struct sockaddr_in stPeerAddress;
+};
+
+void* sendPack(void * args)
+{
+    struct STSendPackArgs* Args = args;
+
     struct icmphdr stIcmpHeader;
     stIcmpHeader.type = 8;
     stIcmpHeader.code = 0;
-    stIcmpHeader.checksum = 0;
-    stIcmpHeader.un.echo.id = nPid;
-    stIcmpHeader.un.echo.sequence = 0;
-    stIcmpHeader.checksum = getCheckSum(&stIcmpHeader, sizeof(stIcmpHeader));
+    stIcmpHeader.un.echo.id = Args->m_nPid;
+    
+    for(uint16_t i=0; ; i++)
+    {
+        sleep(1);
+        stIcmpHeader.un.echo.sequence = i;
+        stIcmpHeader.checksum = 0;
+        stIcmpHeader.checksum = getCheckSum((uint16_t *)&stIcmpHeader, sizeof(stIcmpHeader));
+        int n = sendto(Args->m_nSockFd, &stIcmpHeader, sizeof(stIcmpHeader), 0, (struct sockaddr*)&Args->stPeerAddress, sizeof(Args->stPeerAddress));
+    }
+    return NULL;
+}
 
-    struct sockaddr_in peer_addr;
-    memset(&peer_addr, 0, sizeof(peer_addr));
-    peer_addr.sin_family = AF_INET;
-    int ret = inet_aton(dest_ip, (struct in_addr*)&peer_addr.sin_addr.s_addr);
+void* recvPackAndShow(void * args)
+{
+    struct STRecvPackArgs* Args = args;
+    char recv_buffer[2000] = {0};
+    int nAddrLen = sizeof(Args->stPeerAddress);
+    while(1)
+    {   
+        int nBytes = recvfrom(Args->m_nSockFd, recv_buffer, sizeof(recv_buffer), 0, (struct sockaddr*)&Args->stPeerAddress, &nAddrLen);
+        if(nBytes < 0)
+            continue;
+
+        struct ip* pstIpHeader = (struct ip *)recv_buffer;
+        int nIpHeaderLen = pstIpHeader->ip_hl * 4;
+        int nTTL = pstIpHeader->ip_ttl;
+
+        struct icmphdr * pstIcmpHeader = (struct icmphdr *)(recv_buffer + nIpHeaderLen);
+        int nIcmpSeq = pstIcmpHeader->un.echo.sequence;
+        int nId = pstIcmpHeader->un.echo.id;
+        
+        if(Args->m_nPid != nId){
+            //printf("Recv a icmp packet, but the id is not the host's pid. The id is %d, the pid is %d\n", nId, Args->m_nPid);
+            continue;
+        }
+        printf("%d bytes from %s:icmp_seq=%d ttl=%d\n", nBytes, inet_ntoa(pstIpHeader->ip_src), nIcmpSeq, nTTL);
+    }
+    return NULL;
+}
+
+int main(int argc, char *argv[])
+{
+    int nSockFd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
+    pid_t nPid = getpid();
+    char * pszDestIp = "220.181.38.148";
+
+    struct sockaddr_in stPeerAddress;
+    memset(&stPeerAddress, 0, sizeof(stPeerAddress));
+    stPeerAddress.sin_family = AF_INET;
+    int ret = inet_aton(pszDestIp, (struct in_addr*)&stPeerAddress.sin_addr.s_addr);
     if(ret == -1){
         printf("error: %s\n", strerror(errno));
         return -1;
     }
-    int n = sendto(nSockFd, &stIcmpHeader, sizeof(stIcmpHeader), 0, (struct sockaddr*)&peer_addr, sizeof(peer_addr));
+
+    struct STSendPackArgs stSendPackArgs;
+    stSendPackArgs.m_nPid = nPid;
+    stSendPackArgs.m_nSockFd = nSockFd;
+    stSendPackArgs.pszDestIp = pszDestIp;
+    stSendPackArgs.stPeerAddress = stPeerAddress;
+
+    struct STRecvPackArgs stRecvPackArgs;
+    stRecvPackArgs.m_nSockFd = nSockFd;
+    stRecvPackArgs.m_nPid = nPid;
+    stRecvPackArgs.stPeerAddress = stPeerAddress;
+
+    pthread_t tidSendPack;
+    pthread_t tidRecvPack;
     
-    // recv a packet
-    char recv_buffer[2000] = {0};
-    int nAddrLen = sizeof(peer_addr);
-    int bytes = recvfrom(nSockFd, recv_buffer, sizeof(recv_buffer), 0, (struct sockaddr*)&peer_addr, &nAddrLen);
-    printf("%d\n", bytes);
-    struct ip* stIpHeader = (struct ip *)recv_buffer;
-    int nIpHeaderLen = stIpHeader->ip_hl * 4; // why?
-    printf("%s\n", inet_ntoa(stIpHeader->ip_src));
-    printf("%s\n", inet_ntoa(stIpHeader->ip_dst));
+    pthread_create(&tidSendPack, NULL, sendPack, &stSendPackArgs);
+    pthread_create(&tidRecvPack, NULL, recvPackAndShow, &stRecvPackArgs);
+
+    pthread_join(tidRecvPack, NULL);
+    pthread_join(tidSendPack, NULL);
     return 0;
 }
