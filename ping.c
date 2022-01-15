@@ -16,6 +16,12 @@
 #include <errno.h>
 #include <pthread.h>
 
+double getTimeStamp()
+{
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return tv.tv_sec + ((double)tv.tv_usec) / 1000000;
+}
 
 uint16_t getCheckSum(uint16_t *buff, int nLen)
 {      
@@ -97,7 +103,7 @@ void* recvPackAndShow(void * args)
             //printf("Recv a icmp packet, but the id is not the host's pid. The id is %d, the pid is %d\n", nId, Args->m_nPid);
             continue;
         }
-        printf("%d bytes from %s:icmp_seq=%d ttl=%d\n", nBytes, inet_ntoa(pstIpHeader->ip_src), nIcmpSeq, nTTL);
+        printf("%d bytes from %s: icmp_seq=%d ttl=%d\n", nBytes, inet_ntoa(pstIpHeader->ip_src), nIcmpSeq, nTTL);
     }
     return NULL;
 }
