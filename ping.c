@@ -63,19 +63,21 @@ struct STRecvPackArgs{
 void* sendPack(void * args)
 {
     struct STSendPackArgs* Args = args;
-
-    struct icmphdr stIcmpHeader;
-    stIcmpHeader.type = 8;
-    stIcmpHeader.code = 0;
-    stIcmpHeader.un.echo.id = Args->m_nPid;
     
+    char aSendBuff[128] = {0};
+    struct icmphdr * pstIcmpHeader = aSendBuff;
+    pstIcmpHeader->type = 8;
+    pstIcmpHeader->code = 0;
+    pstIcmpHeader->un.echo.id = Args->m_nPid;
+    double * pd = aSendBuff + sizeof(struct icmphdr);
     for(uint16_t i=0; ; i++)
     {
         sleep(1);
-        stIcmpHeader.un.echo.sequence = i;
-        stIcmpHeader.checksum = 0;
-        stIcmpHeader.checksum = getCheckSum((uint16_t *)&stIcmpHeader, sizeof(stIcmpHeader));
-        int n = sendto(Args->m_nSockFd, &stIcmpHeader, sizeof(stIcmpHeader), 0, (struct sockaddr*)&Args->stPeerAddress, sizeof(Args->stPeerAddress));
+        *pd = getTimeStamp();
+        pstIcmpHeader->un.echo.sequence = i;
+        pstIcmpHeader->checksum = 0;
+        pstIcmpHeader->checksum = getCheckSum((uint16_t *)pstIcmpHeader, sizeof(struct icmphdr)+sizeof(double));
+        int n = sendto(Args->m_nSockFd, aSendBuff, sizeof(struct icmphdr)+sizeof(double), 0, (struct sockaddr*)&Args->stPeerAddress, sizeof(Args->stPeerAddress));
     }
     return NULL;
 }
@@ -83,7 +85,8 @@ void* sendPack(void * args)
 void* recvPackAndShow(void * args)
 {
     struct STRecvPackArgs* Args = args;
-    char recv_buffer[2000] = {0};
+
+    char recv_buffer[128] = {0};
     int nAddrLen = sizeof(Args->stPeerAddress);
     while(1)
     {   
@@ -99,11 +102,13 @@ void* recvPackAndShow(void * args)
         int nIcmpSeq = pstIcmpHeader->un.echo.sequence;
         int nId = pstIcmpHeader->un.echo.id;
         
+        double * pd = (double *)(recv_buffer + nIpHeaderLen + sizeof(struct icmphdr));
         if(Args->m_nPid != nId){
-            //printf("Recv a icmp packet, but the id is not the host's pid. The id is %d, the pid is %d\n", nId, Args->m_nPid);
             continue;
         }
-        printf("%d bytes from %s: icmp_seq=%d ttl=%d\n", nBytes, inet_ntoa(pstIpHeader->ip_src), nIcmpSeq, nTTL);
+
+        double dRTT = (getTimeStamp() - *pd)*1000; // s -> ms, so must multi 1000
+        printf("%d bytes from %s: icmp_seq=%d ttl=%d, time=%fms\n", nBytes, inet_ntoa(pstIpHeader->ip_src), nIcmpSeq, nTTL, dRTT);
     }
     return NULL;
 }
